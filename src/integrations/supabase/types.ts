@@ -14,7 +14,71 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      documents: {
+        Row: {
+          explanations: Json | null
+          id: string
+          original_text: string
+          risks: Json | null
+          simplified_text: string | null
+          uploaded_at: string
+          user_id: string
+        }
+        Insert: {
+          explanations?: Json | null
+          id?: string
+          original_text: string
+          risks?: Json | null
+          simplified_text?: string | null
+          uploaded_at?: string
+          user_id: string
+        }
+        Update: {
+          explanations?: Json | null
+          id?: string
+          original_text?: string
+          risks?: Json | null
+          simplified_text?: string | null
+          uploaded_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      files: {
+        Row: {
+          document_id: string
+          file_name: string
+          file_size: number | null
+          file_url: string
+          id: string
+          uploaded_at: string
+        }
+        Insert: {
+          document_id: string
+          file_name: string
+          file_size?: number | null
+          file_url: string
+          id?: string
+          uploaded_at?: string
+        }
+        Update: {
+          document_id?: string
+          file_name?: string
+          file_size?: number | null
+          file_url?: string
+          id?: string
+          uploaded_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "files_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
