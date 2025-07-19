@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
 interface AuthFormProps {
   onAuthSuccess: () => void;
@@ -21,22 +22,40 @@ export function AuthForm({ onAuthSuccess }: AuthFormProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-
-    // TODO: Replace with actual Supabase authentication
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
+      let error;
+      if (isLogin) {
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        error = signInError;
+      } else {
+        const { error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+        });
+        error = signUpError;
+      }
+      if (error) {
+        toast({
+          title: "Authentication failed",
+          description: error.message,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: isLogin ? "Welcome back!" : "Account created successfully!",
+          description: isLogin
+            ? "You've been logged in securely."
+            : "You can now start simplifying terms & conditions.",
+        });
+        onAuthSuccess();
+      }
+    } catch (error: any) {
       toast({
-        title: isLogin ? "Welcome back!" : "Account created successfully!",
-        description: isLogin ? "You've been logged in securely." : "You can now start simplifying terms & conditions.",
-      });
-      
-      onAuthSuccess();
-    } catch (error) {
-      toast({
-        title: "Authentication failed",
-        description: "Please check your credentials and try again.",
+        title: "Authentication error",
+        description: error.message || "Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -52,13 +71,11 @@ export function AuthForm({ onAuthSuccess }: AuthFormProps) {
             {isLogin ? "Welcome Back" : "Get Started"}
           </CardTitle>
           <CardDescription className="text-base">
-            {isLogin 
-              ? "Sign in to access your simplified documents" 
-              : "Create your account to start simplifying legal text"
-            }
+            {isLogin
+              ? "Sign in to access your simplified documents"
+              : "Create your account to start simplifying legal text"}
           </CardDescription>
         </CardHeader>
-        
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
@@ -78,7 +95,6 @@ export function AuthForm({ onAuthSuccess }: AuthFormProps) {
                 />
               </div>
             </div>
-
             <div className="space-y-2">
               <Label htmlFor="password" className="text-base font-medium">
                 Password
@@ -105,7 +121,6 @@ export function AuthForm({ onAuthSuccess }: AuthFormProps) {
                 </Button>
               </div>
             </div>
-
             <Button
               type="submit"
               className="w-full h-12 text-base font-medium bg-gradient-primary shadow-glow hover:shadow-trust"
@@ -121,17 +136,15 @@ export function AuthForm({ onAuthSuccess }: AuthFormProps) {
               )}
             </Button>
           </form>
-
           <div className="mt-6 text-center">
             <Button
               variant="link"
               onClick={() => setIsLogin(!isLogin)}
               className="text-base"
             >
-              {isLogin 
-                ? "Don't have an account? Sign up" 
-                : "Already have an account? Sign in"
-              }
+              {isLogin
+                ? "Don't have an account? Sign up"
+                : "Already have an account? Sign in"}
             </Button>
           </div>
         </CardContent>

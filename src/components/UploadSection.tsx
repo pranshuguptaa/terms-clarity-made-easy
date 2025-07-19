@@ -6,10 +6,13 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
 interface UploadSectionProps {
-  onAnalyze: (content: string, source: 'file' | 'text') => void;
+  onAnalyze: (content: string, source: 'file' | 'text', docId?: string) => void;
 }
+
+const BACKEND_URL = process.env.VITE_BACKEND_URL || "http://localhost:8000";
 
 export function UploadSection({ onAnalyze }: UploadSectionProps) {
   const [textContent, setTextContent] = useState("");
@@ -20,10 +23,8 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
+    if (e.type === "dragenter" || e.type === "dragleave" || e.type === "dragover") {
+      setDragActive(e.type === "dragenter" || e.type === "dragover");
     }
   };
 
@@ -31,7 +32,6 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFile(e.dataTransfer.files[0]);
     }
@@ -43,8 +43,30 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
     }
   };
 
+  const callAnalysisAPI = async ({ text, fileUrl, docId }: { text?: string; fileUrl?: string; docId: string }) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, file_url: fileUrl, doc_id: docId }),
+      });
+      if (!res.ok) throw new Error("Failed to analyze document");
+      const result = await res.json();
+      return result;
+    } catch (err: any) {
+      toast({
+        title: "Analysis failed",
+        description: err.message || "Could not analyze document.",
+        variant: "destructive",
+      });
+      return null;
+    }
+  };
+
   const handleFile = async (file: File) => {
-    if (!file.type.includes('text') && !file.type.includes('pdf')) {
+    // Validate file type
+    const allowedTypes = ["application/pdf", "text/plain"]; // PDF and TXT
+    if (!allowedTypes.includes(file.type)) {
       toast({
         title: "Unsupported file type",
         description: "Please upload a PDF or text file.",
@@ -52,21 +74,77 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
       });
       return;
     }
-
     setLoading(true);
     try {
-      // TODO: Replace with actual file processing
-      const content = "Sample Terms & Conditions content from uploaded file...";
-      onAnalyze(content, 'file');
-      
+      // Get user
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData?.user) throw new Error("User not authenticated");
+      const userId = userData.user.id;
+      // Upload file to Supabase Storage
+      const fileExt = file.name.split('.').pop();
+      const filePath = `${userId}/${Date.now()}-${file.name}`;
+      const { data: storageData, error: storageError } = await supabase.storage.from('uploads').upload(filePath, file, { upsert: false });
+      if (storageError) throw storageError;
+      // Get public URL (if needed, or use signed URL in production)
+      const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
+      const fileUrl = urlData?.publicUrl || '';
+      // Read file content (for text analysis)
+      let content = "";
+      if (file.type === "text/plain") {
+        content = await file.text();
+      } else if (file.type === "application/pdf") {
+        // For PDFs, send to backend for extraction in next step
+        content = "";
+      }
+      // Insert into documents table
+      const { data: docData, error: docError } = await supabase.from('documents').insert([
+        {
+          user_id: userId,
+          original_text: content || "PDF uploaded", // Placeholder for PDF, will be updated after backend analysis
+        },
+      ]).select();
+      if (docError || !docData || !docData[0]) throw docError || new Error("Failed to create document");
+      const documentId = docData[0].id;
+      // Insert into files table
+      const { error: fileDbError } = await supabase.from('files').insert([
+        {
+          document_id: documentId,
+          file_name: file.name,
+          file_size: file.size,
+          file_url: fileUrl,
+        },
+      ]);
+      if (fileDbError) throw fileDbError;
       toast({
         title: "File uploaded successfully!",
         description: "Your document is being analyzed...",
       });
-    } catch (error) {
+      // Call backend for analysis
+      const analysisResult = await callAnalysisAPI({
+        text: content || undefined,
+        fileUrl: file.type === "application/pdf" ? fileUrl : undefined,
+        docId: documentId,
+      });
+      if (analysisResult) {
+        // Save analysis result to Supabase
+        const { error: updateError } = await supabase.from('documents').update({
+          simplified_text: analysisResult.summary,
+          explanations: analysisResult.explanations,
+          risks: analysisResult.highlights,
+        }).eq('id', documentId);
+        if (updateError) {
+          toast({
+            title: "Failed to save analysis result",
+            description: updateError.message,
+            variant: "destructive",
+          });
+        }
+        onAnalyze(analysisResult, 'file', documentId);
+      }
+    } catch (error: any) {
       toast({
         title: "Upload failed",
-        description: "There was an error processing your file. Please try again.",
+        description: error.message || "There was an error processing your file. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -74,7 +152,7 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
     }
   };
 
-  const handleTextAnalyze = () => {
+  const handleTextAnalyze = async () => {
     if (!textContent.trim()) {
       toast({
         title: "No content to analyze",
@@ -83,12 +161,55 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
       });
       return;
     }
-
-    onAnalyze(textContent, 'text');
-    toast({
-      title: "Text submitted successfully!",
-      description: "Your content is being analyzed...",
-    });
+    setLoading(true);
+    try {
+      // Get user
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData?.user) throw new Error("User not authenticated");
+      const userId = userData.user.id;
+      // Insert into documents table
+      const { data: docData, error: docError } = await supabase.from('documents').insert([
+        {
+          user_id: userId,
+          original_text: textContent,
+        },
+      ]).select();
+      if (docError || !docData || !docData[0]) throw docError || new Error("Failed to create document");
+      const documentId = docData[0].id;
+      toast({
+        title: "Text submitted successfully!",
+        description: "Your content is being analyzed...",
+      });
+      // Call backend for analysis
+      const analysisResult = await callAnalysisAPI({
+        text: textContent,
+        docId: documentId,
+      });
+      if (analysisResult) {
+        // Save analysis result to Supabase
+        const { error: updateError } = await supabase.from('documents').update({
+          simplified_text: analysisResult.summary,
+          explanations: analysisResult.explanations,
+          risks: analysisResult.highlights,
+        }).eq('id', documentId);
+        if (updateError) {
+          toast({
+            title: "Failed to save analysis result",
+            description: updateError.message,
+            variant: "destructive",
+          });
+        }
+        onAnalyze(analysisResult, 'text', documentId);
+      }
+    } catch (error: any) {
+      toast({
+        title: "Submission failed",
+        description: error.message || "There was an error processing your text. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -102,7 +223,6 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
           with clear explanations of potential risks.
         </p>
       </div>
-
       <Card className="shadow-trust animate-slide-up">
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
@@ -113,7 +233,6 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
             Choose how you'd like to provide your terms & conditions
           </CardDescription>
         </CardHeader>
-        
         <CardContent>
           <Tabs defaultValue="upload" className="w-full">
             <TabsList className="grid w-full grid-cols-2 h-12">
@@ -126,7 +245,6 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
                 Paste Text
               </TabsTrigger>
             </TabsList>
-            
             <TabsContent value="upload" className="mt-6">
               <div
                 className={`border-2 border-dashed rounded-lg p-8 text-center transition-all ${
@@ -143,7 +261,6 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
                   <div className="mx-auto w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center">
                     <Upload className="h-8 w-8 text-primary" />
                   </div>
-                  
                   <div className="space-y-2">
                     <p className="text-lg font-medium">
                       Drag & drop your file here
@@ -152,7 +269,6 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
                       Supports PDF and text files • English language only
                     </p>
                   </div>
-                  
                   <div className="flex items-center justify-center">
                     <Label htmlFor="file-upload">
                       <Button variant="outline" className="cursor-pointer" disabled={loading}>
@@ -163,7 +279,7 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
                       id="file-upload"
                       type="file"
                       className="hidden"
-                      accept=".pdf,.txt,.doc,.docx"
+                      accept=".pdf,.txt"
                       onChange={handleFileInput}
                       disabled={loading}
                     />
@@ -171,7 +287,6 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
                 </div>
               </div>
             </TabsContent>
-            
             <TabsContent value="text" className="mt-6">
               <div className="space-y-4">
                 <Label htmlFor="text-content" className="text-base font-medium">
@@ -183,6 +298,7 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
                   value={textContent}
                   onChange={(e) => setTextContent(e.target.value)}
                   className="min-h-[200px] text-base resize-none"
+                  disabled={loading}
                 />
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-2 text-sm text-muted-foreground">
@@ -192,9 +308,9 @@ export function UploadSection({ onAnalyze }: UploadSectionProps) {
                   <Button 
                     onClick={handleTextAnalyze}
                     className="bg-gradient-primary shadow-glow hover:shadow-trust"
-                    disabled={!textContent.trim()}
+                    disabled={!textContent.trim() || loading}
                   >
-                    Analyze Text
+                    {loading ? "Processing..." : "Analyze Text"}
                   </Button>
                 </div>
               </div>
